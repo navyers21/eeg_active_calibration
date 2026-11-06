@@ -407,13 +407,13 @@ def p_repeat_new(st, k):
 
 
 def p_oracle_loss(st, k):
-    """Upper bound (cheats): unseen images the current model fits worst, scored with their real EEG."""
+    """Upper bound: unseen images the current model fits worst, scored with their real EEG."""
     cand = np.setdiff1d(st.new(), st.prep.oracle_val)
     return _top(st.loss(cand, st.prep.full_x[cand]), cand, k)
 
 
 def p_oracle_batch(st, k, n_batches=8):
-    """Upper bound (cheats): of 8 random candidate batches, keep the one whose real EEG most improves retrieval on
+    """Upper bound: of 8 random candidate batches, keep the one whose real EEG most improves retrieval on
     500 pool images set aside for the oracle (never the evaluation concepts)."""
     p, cand = st.prep, np.setdiff1d(st.new(), st.prep.oracle_val)
     idx, x = st.acquired()
@@ -527,7 +527,7 @@ def diagnostics(prep, cfg):
 
 def run_group(group, targets, montages, seeds=(0, 1, 2), policies=POLICIES):
     """'diag': checks + ceilings. 'gate': random x GATE_CFGS. 'main': every policy with ENV['frozen'].
-    'oracle': random vs the two cheating upper bounds, frozen adapter. 'align' (extension): random x ALIGN_CFGS."""
+    'oracle': random vs the two oracle upper bounds, frozen adapter. 'align' (extension): random x ALIGN_CFGS."""
     for t in targets:
         for mon in montages:
             if group == 'diag':

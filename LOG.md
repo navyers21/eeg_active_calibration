@@ -62,8 +62,8 @@ One run = one target × montage × policy × adapter × seed and gives a learnin
 | expected_gain | decision | Largest first-layer gradient, using the other subjects' mean EEG as a stand-in response |
 | intersubject | decision | Images where the other subjects' f0 embeddings disagree most |
 | repeat_new | decision | Half re-show worst-fit images, half kcenter. With whole-image acquisition this reduces to kcenter |
-| oracle_loss | oracle (cheats) | Unseen images the current decoder fits worst, scored with their real EEG before they are shown |
-| oracle_batch | oracle (cheats) | Draws 8 random candidate batches, adapts on each with its real EEG, keeps the batch that most improves retrieval on 500 pool images set aside for the oracle (never the evaluation concepts) |
+| oracle_loss | oracle | Scores every unseen image by how badly the current decoder fits that image's real recorded EEG, then shows the worst-fit ones. A real session cannot do this, because the EEG for an image only exists after it is shown |
+| oracle_batch | oracle | Draws 8 random candidate batches, adapts the decoder on each using the batch's real recorded EEG, and keeps the batch that most improves retrieval on 500 pool images set aside for the oracle (never the evaluation concepts). This directly measures each batch's benefit, which a real session could only know after recording it |
 
 **Adapters** (how f0 is updated on the acquired data)
 
@@ -173,7 +173,7 @@ The frozen adapter (all-a1, reh0.5, s200) was chosen on this table and used for 
 | posterior17 | expected_gain | 4.48 | 4.50 | 4.50 | 4.96 | 5.02 | 5.82 |
 | posterior17 | kcenter | 4.33 | 4.63 | 4.62 | 4.70 | 5.19 | 6.26 |
 
-**Oracle upper bound (subject 1, 2 seeds).** The oracle policies are allowed to look at a candidate image's real EEG before choosing it, which no real calibration session could do. They estimate how much any selection rule could gain over random. If even they do not beat random, image selection has no headroom on this data.
+**Oracle upper bound (subject 1, 2 seeds).** The oracle policies use each candidate image's recorded EEG to choose it, information a real session only has after the image is shown. They estimate how much any selection rule could gain over random. If even they do not beat random, image selection has no headroom on this data.
 
 | Montage (f0) | Policy | 100 | 200 | 400 | 800 | 1600 | 3200 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -192,7 +192,7 @@ Neither oracle beats random below 3,200 presentations on either montage. Both or
 
 ## Takeaways
 
-1. **No policy beats random.** Every decision-based policy loses to random on AUC (0/4 or 1/4 targets), and the gap grows with budget (about −1 pt at 3,200 for expected_gain and kcenter). Coverage baselines tie random at best. Even the oracle policies, which see each candidate's real EEG, do not beat random below 3,200 presentations, so the problem is a lack of headroom, not weak policies.
+1. **No policy beats random.** Every decision-based policy loses to random on AUC (0/4 or 1/4 targets), and the gap grows with budget (about −1 pt at 3,200 for expected_gain and kcenter). Coverage baselines tie random at best. Even the oracle policies, which choose images using their recorded EEG, do not beat random below 3,200 presentations, so the problem is a lack of headroom, not weak policies.
 2. **Calibration does not beat f0 until about 1,600 presentations.** Random's gain over f0 is negative at every budget up to 800 (≈ 200 images, ~10 min) on both montages.
 3. **Fewer steps removes the harm but adds no gain.** At 50 to 100 steps the adapter matches f0 at 100 presentations instead of dropping below it, but nothing clearly beats f0 before 1,600.
 4. **Held-out step selection fails at small budgets.** With 5 to 20 held-out images it picks harmful step counts (4.03 vs f0 5.65), even though keeping f0 was an option. A real session could not tell when to stop either.
