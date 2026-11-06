@@ -23,7 +23,7 @@ calibration so a decoder pretrained on other subjects adapts best, counted in re
 | Group | Subjects | What it decides |
 | --- | --- | --- |
 | `diag` | tuning subject 1 | data and method sanity: split, scale, identity check, full-pool ceilings incl. scratch |
-| `gate` | tuning subject 1 | which adapter / acquisition beats f0, and at what budget (random policy only) |
+| `gate` | tuning subject 1 | which adapter / acquisition beats f0, and at what budget (random policy only); v0.3 adds 25/50/100 steps and held-out step selection |
 | `main` | targets 2, 5, 9, 8 | policy comparison with the frozen adapter |
 
 **Go:** a decision-based policy beats random and TypiClust on AUC for >= 3 of 4 targets, at several budgets, with the

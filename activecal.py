@@ -30,13 +30,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 import ubpkd as U
 
-VERSION = 'activecal-0.2'
+VERSION = 'activecal-0.3'
 TARGET_SPEC = 'uniform:11'
 SEED_SET = 25
 BUDGETS = [25, 50, 100, 200, 400, 800, 1600, 3200]
 POLICIES = ['random', 'category', 'kcenter', 'typiclust', 'error_region', 'expected_gain', 'intersubject', 'repeat_new']
 BASE_CFG = dict(adapter='lowrank', rank=8, lr=1e-3, wd=1e-4, steps=200, batch=64, anchor=10.0, n_neg=1024,
-                rehearse=0.0, acquire='rep', scratch_steps=1500, scratch_lr=3e-4)
+                rehearse=0.0, acquire='rep', scratch_steps=1500, scratch_lr=3e-4, select=False)
 GATE_CFGS = [dict(adapter='lowrank', rank=8, lr=1e-3, acquire='rep'),
              dict(adapter='lowrank', rank=8, lr=1e-3, acquire='image'),
              dict(adapter='lowrank', rank=32, lr=1e-3, acquire='image'),
@@ -44,6 +44,9 @@ GATE_CFGS = [dict(adapter='lowrank', rank=8, lr=1e-3, acquire='rep'),
              dict(adapter='all', anchor=1.0, lr=1e-4, acquire='image'),
              dict(adapter='all', anchor=1.0, lr=1e-4, acquire='image', rehearse=0.5),
              dict(adapter='scratch', acquire='image')]
+_BEST = dict(adapter='all', anchor=1.0, lr=1e-4, acquire='image', rehearse=0.5)
+GATE_CFGS += [dict(_BEST, steps=n) for n in (25, 50, 100)] + [dict(_BEST, select=True)]   # 0.3: step-count check
+SELECT_GRID = [0, 25, 50, 100, 200]       # select=True: steps chosen on 20% of the acquired images, 0 = keep f0
 ENV = dict(results_csv=None, frozen=dict(BASE_CFG))      # frozen = the adapter used by group 'main'
 
 
@@ -57,7 +60,7 @@ def cfg_name(c):
     if c['adapter'] == 'scratch':
         return f"scratch-s{c['scratch_steps']}-lr{c['scratch_lr']:g}-{c['acquire']}"
     core = c['adapter'] + (f"-r{c['rank']}" if c['adapter'] == 'lowrank' else f"-a{c['anchor']:g}")
-    return f"{core}-lr{c['lr']:g}-s{c['steps']}-reh{c['rehearse']:g}-{c['acquire']}"
+    return f"{core}-lr{c['lr']:g}-s{c['steps']}-reh{c['rehearse']:g}-{c['acquire']}" + ('-sel' if c.get('select') else '')
 
 
 def run_tag(group, target, montage, policy, cfg, seed):
@@ -189,9 +192,29 @@ def _swap_first_linear(m, new):
     raise RuntimeError('first linear layer not found')
 
 
+def select_steps(prep, X, T, seed, cfg, frac=0.2):
+    """Hold out 20% of the acquired images, train on the rest, return the grid step count with the best held-out
+    cosine to the image targets (0 = f0). Uses only data the user has already recorded."""
+    n = len(X)
+    perm = np.random.RandomState(seed).permutation(n)
+    va, tr = perm[:max(1, int(round(frac * n)))], perm[max(1, int(round(frac * n))):]
+    Tv = F.normalize(torch.as_tensor(T[va]).float().to(U.ENV['device']), dim=-1)
+    score = lambda m: float((F.normalize(U.embed(m, X[va]), dim=-1) * Tv).sum(-1).mean())
+    best, best_s = SELECT_GRID[0], score(prep.f0)
+    for k in SELECT_GRID[1:]:
+        s = score(adapt(prep, X[tr], T[tr], seed, dict(cfg, select=False), steps=k))
+        if s > best_s:
+            best, best_s = k, s
+    return best
+
+
 def adapt(prep, X, T, seed, cfg, steps=None):
     """Calibrate on acquired pairs (X inputs, T image targets), from f0 or from scratch."""
     dev = U.ENV['device']
+    if cfg.get('select') and steps is None and len(X) >= 5:
+        T = T.cpu().numpy() if torch.is_tensor(T) else np.asarray(T)
+        X = np.asarray(X)
+        steps = select_steps(prep, X, T, seed, cfg)
     torch.manual_seed(seed)
     X, T = torch.as_tensor(X).to(dev).float(), torch.as_tensor(T).to(dev).float()
     anchor, n_reh = None, 0
