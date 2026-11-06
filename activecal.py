@@ -30,7 +30,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import ubpkd as U
 
-VERSION = 'activecal-0.3'
+VERSION = 'activecal-0.4'
 TARGET_SPEC = 'uniform:11'
 SEED_SET = 25
 BUDGETS = [25, 50, 100, 200, 400, 800, 1600, 3200]
@@ -46,6 +46,10 @@ GATE_CFGS = [dict(adapter='lowrank', rank=8, lr=1e-3, acquire='rep'),
              dict(adapter='scratch', acquire='image')]
 _BEST = dict(adapter='all', anchor=1.0, lr=1e-4, acquire='image', rehearse=0.5)
 GATE_CFGS += [dict(_BEST, steps=n) for n in (25, 50, 100)] + [dict(_BEST, select=True)]   # 0.3: step-count check
+ALIGN_CFGS = [dict(adapter='ea', acquire='image'),                                    # label-free, 0 trials needed
+              dict(adapter='align', anchor=1.0, lr=1e-3, acquire='image'),            # learned C x C input map
+              dict(adapter='ea_align', anchor=1.0, lr=1e-3, acquire='image')]         # EA, then learned map
+ORACLE_POLICIES = ['random', 'oracle_loss', 'oracle_batch']
 SELECT_GRID = [0, 25, 50, 100, 200]       # select=True: steps chosen on 20% of the acquired images, 0 = keep f0
 ENV = dict(results_csv=None, frozen=dict(BASE_CFG))      # frozen = the adapter used by group 'main'
 
@@ -57,6 +61,8 @@ def make_cfg(**kw):
 
 
 def cfg_name(c):
+    if c['adapter'] == 'ea':
+        return f"ea-{c['acquire']}"
     if c['adapter'] == 'scratch':
         return f"scratch-s{c['scratch_steps']}-lr{c['scratch_lr']:g}-{c['acquire']}"
     core = c['adapter'] + (f"-r{c['rank']}" if c['adapter'] == 'lowrank' else f"-a{c['anchor']:g}")
@@ -134,7 +140,7 @@ class Prep:
         """Inter-subject dispersion of f0 embeddings, mean source EEG (surrogate input), rehearsal samples."""
         pos = {p: i for i, p in enumerate(self.P)}
         srcs = [s for s in U.ENV['pool_subjects'] if s != self.target]
-        acc_u, acc_x, rx, rt, self.src_stats = 0, 0, [], [], {}
+        acc_u, acc_x, rx, rt, self.src_stats, acc_r = 0, 0, [], [], {}, 0
         rng = np.random.RandomState(0)
         for s in srcs:
             d = U.subject_montage(s, self.montage)
@@ -146,9 +152,12 @@ class Prep:
             pick = rng.choice(self.n, n_rehearse // len(srcs), replace=False)
             rx.append(x[pick].astype(np.float16)); rt.append(pick)
             self.src_stats[s] = (float(x.mean()), float(x.std()))
+            acc_r = acc_r + _cov(x)
         self.dispersion = (1 - (acc_u / len(srcs)).norm(dim=-1)).cpu().numpy()
         self.x_surrogate = (acc_x / len(srcs)).astype(np.float16)
         self.reh_x, self.reh_t = np.concatenate(rx), np.concatenate(rt)
+        self.R_src, self.R_tgt = acc_r / len(srcs), _cov(self.full_x)   # R_tgt: unlabeled target EEG only
+        self.oracle_val = np.random.RandomState(1).choice(self.n, 500, replace=False)   # oracle's own check set
 
     def _typicality(self, k=20, chunk=2048):
         dist = torch.cat([(1 - (self.clip[a:a + chunk] @ self.clip.T).topk(k + 1, dim=-1).values[:, 1:]).mean(-1)
@@ -192,6 +201,31 @@ def _swap_first_linear(m, new):
     raise RuntimeError('first linear layer not found')
 
 
+def _cov(x):
+    x = torch.as_tensor(np.asarray(x, np.float32))
+    x = x - x.mean(-1, keepdim=True)
+    return (torch.einsum('nct,ndt->cd', x, x) / (x.shape[0] * x.shape[-1])).numpy()
+
+
+def _msqrt(R, p):
+    w, v = np.linalg.eigh(R + 1e-6 * np.trace(R) / len(R) * np.eye(len(R)))
+    return (v * w.clip(1e-12) ** p) @ v.T
+
+
+class Aligned(nn.Module):
+    """Frozen f0 behind a C x C channel map: f0(W @ x). W starts at EA (R_src^1/2 R_tgt^-1/2) or identity."""
+
+    def __init__(self, f0, W0, learn):
+        super().__init__()
+        self.f0 = f0.requires_grad_(False)
+        self.register_buffer('W0', torch.as_tensor(W0, dtype=torch.float32))
+        self.W = nn.Parameter(self.W0.clone(), requires_grad=learn)
+        self.softplus, self.logit_scale = f0.softplus, f0.logit_scale
+
+    def forward(self, x):
+        return self.f0(torch.einsum('cd,ndt->nct', self.W, x))
+
+
 def select_steps(prep, X, T, seed, cfg, frac=0.2):
     """Hold out 20% of the acquired images, train on the rest, return the grid step count with the best held-out
     cosine to the image targets (0 = f0). Uses only data the user has already recorded."""
@@ -218,7 +252,16 @@ def adapt(prep, X, T, seed, cfg, steps=None):
     torch.manual_seed(seed)
     X, T = torch.as_tensor(X).to(dev).float(), torch.as_tensor(T).to(dev).float()
     anchor, n_reh = None, 0
-    if cfg['adapter'] == 'scratch':
+    if cfg['adapter'] in ('ea', 'align', 'ea_align'):
+        C = len(U.MONTAGES[prep.montage])
+        W0 = np.eye(C) if cfg['adapter'] == 'align' else _msqrt(prep.R_src, 0.5) @ _msqrt(prep.R_tgt, -0.5)
+        m = Aligned(copy.deepcopy(prep.f0), W0, learn=cfg['adapter'] != 'ea').to(dev)
+        if cfg['adapter'] == 'ea':
+            return m.eval()
+        params, lr = [m.W], cfg['lr']
+        steps = cfg['steps'] if steps is None else steps
+        anchor = [(m.W, m.W0)]
+    elif cfg['adapter'] == 'scratch':
         m = U.build_model('EEGProjectLayer', len(U.MONTAGES[prep.montage]), U.CLIP_MAP['RN50'][1]).to(dev)
         params, lr, steps = list(m.parameters()), cfg['scratch_lr'], cfg['scratch_steps'] if steps is None else steps
     else:
@@ -259,8 +302,8 @@ def adapt(prep, X, T, seed, cfg, steps=None):
 # Policies: each returns k pool indices to present next
 # ----------------------------------------------------------------------------------------------------------------
 class State:
-    def __init__(self, prep, seed):
-        self.prep, self.seed, self.model = prep, seed, prep.f0
+    def __init__(self, prep, seed, cfg=None):
+        self.prep, self.seed, self.model, self.cfg = prep, seed, prep.f0, cfg
         self.rng = np.random.RandomState(seed)
         self.used = np.zeros(prep.n, np.int64)
         self.order = np.argsort(np.random.RandomState(1000 + seed).rand(prep.n, prep.reps.shape[1]), axis=1)
@@ -363,7 +406,29 @@ def p_repeat_new(st, k):
     return np.concatenate([rep, p_kcenter(st, k - len(rep))]).astype(np.int64)
 
 
-POLICY_FN = dict(random=p_random, category=p_category, kcenter=p_kcenter, typiclust=p_typiclust,
+def p_oracle_loss(st, k):
+    """Upper bound (cheats): unseen images the current model fits worst, scored with their real EEG."""
+    cand = np.setdiff1d(st.new(), st.prep.oracle_val)
+    return _top(st.loss(cand, st.prep.full_x[cand]), cand, k)
+
+
+def p_oracle_batch(st, k, n_batches=8):
+    """Upper bound (cheats): of 8 random candidate batches, keep the one whose real EEG most improves retrieval on
+    500 pool images set aside for the oracle (never the evaluation concepts)."""
+    p, cand = st.prep, np.setdiff1d(st.new(), st.prep.oracle_val)
+    idx, x = st.acquired()
+    v = p.oracle_val
+    best, best_s = None, -1
+    for b in range(n_batches):
+        pick = st.rng.choice(cand, k, replace=False)
+        m = adapt(p, np.concatenate([x, p.full_x[pick]]), p.tgt[np.concatenate([idx, pick])], st.seed, st.cfg)
+        s = U.retrieval(m, p.full_x[v], p.tgt[v].cpu(), np.arange(len(v)))[0]
+        if s > best_s:
+            best, best_s = pick, s
+    return best
+
+
+POLICY_FN = dict(oracle_loss=p_oracle_loss, oracle_batch=p_oracle_batch, random=p_random, category=p_category, kcenter=p_kcenter, typiclust=p_typiclust,
                  error_region=p_error_region, expected_gain=p_expected_gain, intersubject=p_intersubject,
                  repeat_new=p_repeat_new)
 
@@ -406,7 +471,7 @@ def simulate(prep, policy, cfg, seed, group):
     """One calibration run: rows at every budget reached (the tag repeats; the run is done when its last row exists)."""
     t0, tag = time.time(), run_tag(group, prep.target, prep.montage, policy, cfg, seed)
     per = prep.reps.shape[1] if cfg['acquire'] == 'image' else 1
-    st = State(prep, seed)
+    st = State(prep, seed, cfg)
     st.used[st.rng.choice(prep.n, SEED_SET, replace=False)] = per
     budgets, rows = [b for b in BUDGETS if b >= st.used.sum()], []
     while budgets:
@@ -461,15 +526,16 @@ def diagnostics(prep, cfg):
 
 
 def run_group(group, targets, montages, seeds=(0, 1, 2), policies=POLICIES):
-    """'diag': checks + ceilings. 'gate': random policy x GATE_CFGS. 'main': every policy with ENV['frozen']."""
+    """'diag': checks + ceilings. 'gate': random x GATE_CFGS. 'main': every policy with ENV['frozen'].
+    'oracle': random vs the two cheating upper bounds, frozen adapter. 'align' (extension): random x ALIGN_CFGS."""
     for t in targets:
         for mon in montages:
             if group == 'diag':
                 jobs, cfg = [], make_cfg(**ENV['frozen'])
                 todo_ceil = run_tag('diag', t, mon, 'full_pool_scratch', cfg, 0) not in done_tags()
             else:
-                cfgs = GATE_CFGS if group == 'gate' else [ENV['frozen']]
-                pols = ['random'] if group == 'gate' else policies
+                cfgs = {'gate': GATE_CFGS, 'align': ALIGN_CFGS}.get(group, [ENV['frozen']])
+                pols = {'gate': ['random'], 'align': ['random'], 'oracle': ORACLE_POLICIES}.get(group, policies)
                 jobs = [(p, make_cfg(**c), s) for c in cfgs for p in pols for s in seeds]
                 jobs = [j for j in jobs if run_tag(group, t, mon, j[0], j[1], j[2]) not in done_tags()]
                 cfg = make_cfg(**ENV['frozen'])
