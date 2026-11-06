@@ -223,7 +223,7 @@ class Aligned(nn.Module):
         self.softplus, self.logit_scale = f0.softplus, f0.logit_scale
 
     def forward(self, x):
-        return self.f0(torch.einsum('cd,ndt->nct', self.W, x))
+        return self.f0(torch.einsum('cd,ndt->nct', self.W, x).contiguous())
 
 
 def select_steps(prep, X, T, seed, cfg, frac=0.2):
