@@ -1,13 +1,13 @@
 # EEG Active Calibration (Direction B): Experiment Log
 
-Neurotech@Berkeley, Project A. Tuning on subject 1, policy comparison on subjects 2, 5, 8, 9. Updated 2026-11-05.
-Code: `github.com/navyers21/eeg_active_calibration` (branch `main`, `activecal.py` v0.2 for main, v0.3 for the step check).
+Neurotech@Berkeley, Project B. Tuning on subject 1, policy comparison on subjects 2, 5, 8, 9. Updated 2026-11-06.
+Code: `github.com/navyers21/eeg_active_calibration` (branch `main`, `activecal.py` v0.2 for main, v0.3 for the step check, v0.4 for the oracle).
 
 ## Context
 
 |  |  |
 | --- | --- |
-| **Problem** | A new user starts with a decoder pretrained on other subjects. Which images should they view during calibration so that the decoder adapts best per recorded presentation? If a smart choice of images beats a random one, calibration can be shorter. |
+| **Problem** |  A new user starts with a decoder pretrained on other subjects. Which images should they view during calibration so the decoder adapts best? If a smart choice of images beats a random one, calibration can be shorter. |
 | **Dataset** | THINGS-EEG, 10 subjects. Train: 16,540 images (1,654 concepts × 10), 4 repetitions each. The official test set is not used. |
 | **Task** | Zero-shot retrieval, 200-way, in CLIP (RN50) space with UBP uniform-11 blur targets. **Chance = 0.5%.** |
 | **Source decoder (f0)** | UBP EEGProject trained on the 9 other subjects (LOSO), never on the target. This is the uncalibrated starting point. |
@@ -39,6 +39,7 @@ One run = one target × montage × policy × adapter × seed and gives a learnin
 | diag | 1 | f0 + 3 full-pool ceilings per montage | Is the pipeline sane, and what is the ceiling? |
 | gate | 1 | random policy × 11 adapter settings × 2 seeds | Which adapter to freeze, and does calibration beat f0 at all? |
 | main | 2, 5, 8, 9 | 8 policies × 3 seeds, frozen adapter | Does any policy beat random? |
+| oracle | 1 | random vs 2 oracle policies × 2 seeds, frozen adapter | Is there any headroom for image selection at all? |
 
 ## Legend
 
@@ -61,6 +62,8 @@ One run = one target × montage × policy × adapter × seed and gives a learnin
 | expected_gain | decision | Largest first-layer gradient, using the other subjects' mean EEG as a stand-in response |
 | intersubject | decision | Images where the other subjects' f0 embeddings disagree most |
 | repeat_new | decision | Half re-show worst-fit images, half kcenter. With whole-image acquisition this reduces to kcenter |
+| oracle_loss | oracle (cheats) | Unseen images the current decoder fits worst, scored with their real EEG before they are shown |
+| oracle_batch | oracle (cheats) | Draws 8 random candidate batches, adapts on each with its real EEG, keeps the batch that most improves retrieval on 500 pool images set aside for the oracle (never the evaluation concepts) |
 
 **Adapters** (how f0 is updated on the acquired data)
 
@@ -90,7 +93,7 @@ Full pool = all ~14,540 pool images, 1,000 steps. Identity check (adapter at 0 s
 
 | Group | Montage | Adapter | 100 | 200 | 400 | 800 | 1600 | 3200 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| f0 | occipital8 | | 4.70 | 4.70 | 4.70 | 4.70 | 4.70 | 4.70 |
+| f0 | occipital8 |  | 4.70 | 4.70 | 4.70 | 4.70 | 4.70 | 4.70 |
 | Adapters | occipital8 | lowrank-r8, rep | 2.05 | 1.90 | 2.98 | 3.28 | 4.40 | 4.62 |
 |  | occipital8 | lowrank-r8 | 2.58 | 2.85 | 2.88 | 2.80 | 4.65 | 5.68 |
 |  | occipital8 | lowrank-r32 | 2.15 | 2.25 | 3.20 | 3.25 | 4.32 | 5.25 |
@@ -102,7 +105,7 @@ Full pool = all ~14,540 pool images, 1,000 steps. Identity check (adapter at 0 s
 |  | occipital8 | all-a1, reh0.5, s50 | 4.70 | 4.72 | 4.85 | 4.78 | 5.58 | 6.60 |
 |  | occipital8 | all-a1, reh0.5, s100 | 4.80 | 4.55 | 4.68 | 4.68 | 5.90 | 6.52 |
 |  | occipital8 | all-a1, reh0.5, sel | 4.20 | 4.68 | 4.62 | 5.40 | 5.18 | 6.68 |
-| f0 | posterior17 | | 5.65 | 5.65 | 5.65 | 5.65 | 5.65 | 5.65 |
+| f0 | posterior17 |  | 5.65 | 5.65 | 5.65 | 5.65 | 5.65 | 5.65 |
 | Adapters | posterior17 | lowrank-r8, rep | 1.78 | 2.68 | 2.97 | 3.22 | 4.32 | 5.10 |
 |  | posterior17 | lowrank-r8 | 2.55 | 2.65 | 2.80 | 3.00 | 3.98 | 5.85 |
 |  | posterior17 | lowrank-r32 | 2.08 | 2.25 | 3.20 | 3.30 | 3.85 | 5.93 |
@@ -136,17 +139,17 @@ The frozen adapter (all-a1, reh0.5, s200) was chosen on this table and used for 
 
 | Group | Montage | Policy | AUC | Gain vs f0 | vs random | Wins | vs typiclust | Wins |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Baseline | occipital8 | random | 5.32 | −0.04 | | | +0.12 | 3/4 |
+| Baseline | occipital8 | random | 5.32 | −0.04 |  |  | +0.12 | 3/4 |
 | Coverage | occipital8 | category | 5.28 | −0.09 | −0.04 | 2/4 | +0.08 | 3/4 |
-|  | occipital8 | typiclust | 5.20 | −0.16 | −0.12 | 1/4 | | |
+|  | occipital8 | typiclust | 5.20 | −0.16 | −0.12 | 1/4 |  |  |
 |  | occipital8 | kcenter | 4.71 | −0.66 | −0.61 | 0/4 | −0.49 | 0/4 |
 | Decision | occipital8 | intersubject | 5.05 | −0.31 | −0.27 | 0/4 | −0.15 | 0/4 |
 |  | occipital8 | error_region | 4.99 | −0.37 | −0.33 | 0/4 | −0.21 | 0/4 |
 |  | occipital8 | repeat_new | 4.80 | −0.56 | −0.51 | 0/4 | −0.39 | 0/4 |
 |  | occipital8 | expected_gain | 4.75 | −0.61 | −0.57 | 0/4 | −0.45 | 0/4 |
-| Baseline | posterior17 | random | 5.31 | −0.91 | | | +0.12 | 4/4 |
+| Baseline | posterior17 | random | 5.31 | −0.91 |  |  | +0.12 | 4/4 |
 | Coverage | posterior17 | category | 5.21 | −1.01 | −0.10 | 1/4 | +0.02 | 3/4 |
-|  | posterior17 | typiclust | 5.20 | −1.03 | −0.12 | 0/4 | | |
+|  | posterior17 | typiclust | 5.20 | −1.03 | −0.12 | 0/4 |  |  |
 |  | posterior17 | kcenter | 4.89 | −1.34 | −0.43 | 0/4 | −0.31 | 0/4 |
 | Decision | posterior17 | error_region | 5.13 | −1.10 | −0.19 | 1/4 | −0.07 | 2/4 |
 |  | posterior17 | intersubject | 4.96 | −1.27 | −0.35 | 0/4 | −0.24 | 1/4 |
@@ -170,17 +173,30 @@ The frozen adapter (all-a1, reh0.5, s200) was chosen on this table and used for 
 | posterior17 | expected_gain | 4.48 | 4.50 | 4.50 | 4.96 | 5.02 | 5.82 |
 | posterior17 | kcenter | 4.33 | 4.63 | 4.62 | 4.70 | 5.19 | 6.26 |
 
+**Oracle upper bound (subject 1, 2 seeds).** The oracle policies are allowed to look at a candidate image's real EEG before choosing it, which no real calibration session could do. They estimate how much any selection rule could gain over random. If even they do not beat random, image selection has no headroom on this data.
+
+| Montage (f0) | Policy | 100 | 200 | 400 | 800 | 1600 | 3200 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| occipital8 (4.70) | random | 4.57 | 4.90 | 4.88 | 5.22 | 5.85 | 6.75 |
+|  | oracle_batch | 4.55 | 4.65 | 5.20 | 5.22 | 5.50 | 6.78 |
+|  | oracle_loss | 4.35 | 4.22 | 4.62 | 5.22 | 5.05 | 6.18 |
+| posterior17 (5.65) | random | 4.78 | 4.70 | 5.35 | 5.55 | 5.90 | 6.25 |
+|  | oracle_batch | 4.15 | 4.68 | 4.72 | 5.25 | 5.82 | 7.10 |
+|  | oracle_loss | 5.03 | 4.55 | 4.90 | 4.70 | 6.38 | 7.15 |
+
+Neither oracle beats random below 3,200 presentations on either montage. Both oracles are about 0.9 pts above random at 3,200 on posterior17 only, which needs more seeds to establish.
+
 **Random gain over f0 by budget:** occipital8 −0.98 / −0.55 / −0.52 / −0.16 / +0.67 / +1.63; posterior17 −1.72 / −1.65 / −1.35 / −0.90 / −0.20 / +0.79 (100 to 3,200 presentations).
 
 **Noise check** (mean repetition consistency of acquired images; pool mean about 0.074 occipital8, 0.043 posterior17): kcenter and repeat_new 0.080 / 0.048, all others 0.072 to 0.076 / 0.040 to 0.044. Clean-gallery top-1 ranks policies the same way (random 4.34 / 4.12 highest, expected_gain 3.85 / 3.81 lowest).
 
 ## Takeaways
 
-1. **No policy beats random.** Every decision-based policy loses to random on AUC (0/4 or 1/4 targets), and the gap grows with budget (about −1 pt at 3,200 for expected_gain and kcenter). Coverage baselines tie random at best.
+1. **No policy beats random.** Every decision-based policy loses to random on AUC (0/4 or 1/4 targets), and the gap grows with budget (about −1 pt at 3,200 for expected_gain and kcenter). Coverage baselines tie random at best. Even the oracle policies, which see each candidate's real EEG, do not beat random below 3,200 presentations, so the problem is a lack of headroom, not weak policies.
 2. **Calibration does not beat f0 until about 1,600 presentations.** Random's gain over f0 is negative at every budget up to 800 (≈ 200 images, ~10 min) on both montages.
 3. **Fewer steps removes the harm but adds no gain.** At 50 to 100 steps the adapter matches f0 at 100 presentations instead of dropping below it, but nothing clearly beats f0 before 1,600.
 4. **Held-out step selection fails at small budgets.** With 5 to 20 held-out images it picks harmful step counts (4.03 vs f0 5.65), even though keeping f0 was an option. A real session could not tell when to stop either.
 5. **The f0 prior helps at small budgets, not at large ones.** Scratch is far below f0 under 800 presentations (0.9% at 100) but matches adapting f0 on the full pool.
-6. **Go/no-go: park.** The precondition (random calibration beats f0) fails at practical budgets, and no policy beats random or TypiClust on ≥3 of 4 targets. Calibration time is better spent on more trials than on choosing them.
+6. **Go/no-go: park.** The precondition (random calibration beats f0) fails at practical budgets, and no policy beats random or TypiClust on ≥3 of 4 targets. The oracle shows there is little to gain from selection even in principle. Calibration time is better spent on more trials than on choosing them.
 
-**Caveats:** evaluation uses held-out training concepts with 4-rep averages, so absolute numbers are not comparable to test-set numbers (80-rep averages); f0 was early-stopped on the source subjects' copies of the same 200 held-out concepts, so it is slightly optimistic; source data use `hf_whiten` (63-channel whitening leaks across channels); 4 targets, 3 seeds; gate and step check on one subject with 2 seeds; repeat_new is not a real re-showing test under whole-image acquisition; rehearsal sampling is not seeded.
+**Caveats:** evaluation uses held-out training concepts with 4-rep averages, so absolute numbers are not comparable to test-set numbers (80-rep averages); f0 was early-stopped on the source subjects' copies of the same 200 held-out concepts, so it is slightly optimistic; source data use `hf_whiten` (63-channel whitening leaks across channels); 4 targets, 3 seeds; gate and step check on one subject with 2 seeds; repeat_new is not a real re-showing test under whole-image acquisition; rehearsal sampling is not seeded; oracle_batch compares only 8 candidate batches per round on a 4-rep check set, so it is a weak oracle, and the oracle was run on one subject with 2 seeds.
