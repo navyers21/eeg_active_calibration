@@ -16,6 +16,30 @@ Code: `github.com/navyers21/eeg_active_calibration` (branch `main`, `activecal.p
 | **Budget unit** | Presentations. One image = 4 presentations (all 4 repetitions revealed at once). Budgets 100 to 3,200 (25 to 800 images). Every run starts from the same 25 random images per seed. |
 | **Seeds** | 3 seeds per target (main), 2 seeds (gate). Numbers are seed means. |
 
+## Simulation
+
+No new EEG is recorded. Each training subject already viewed every pool image 4 times, so a "calibration session" is replayed from those recordings: when a policy asks to show an image, the simulator hands back that subject's real EEG for it. The policy never sees EEG for images it has not asked for.
+
+| Step | What happens |
+| --- | --- |
+| **1. Pick a target** | One subject plays the new user (e.g. subject 2). f0 is the UBP decoder trained on the other 9 subjects. |
+| **2. Split the target's data** | 200 concepts (all their images) are locked away as the evaluation set. The remaining ~14,540 images form the pool the policy can choose from. |
+| **3. Seed round** | 25 random pool images are "shown" (same 25 for every policy on a given seed): 100 presentations. |
+| **4. Adapt** | Starting from a fresh copy of f0, the adapter trains on every image acquired so far (input = mean of its 4 repetitions, target = its blurred CLIP feature). Each round restarts from f0, it does not continue the last round's model. |
+| **5. Score** | If the total has hit a budget (100, 200, ..., 3,200), the adapted model is evaluated on the locked 200 concepts and a row is logged. |
+| **6. Choose next images** | The policy looks at what it is allowed to see (image features, the target's EEG for already-acquired images, the other subjects' recordings, the current adapted model) and picks the next batch from unseen pool images. Batch size is about half the current total, so there are ~2 rounds per doubling (100 → 150 → 200 → 300 → 400 ...). |
+| **7. Reveal** | The chosen images' 4 recorded repetitions are added to the acquired set (+4 presentations each). Back to step 4 until 3,200. |
+
+One run = one target × montage × policy × adapter × seed and gives a learning curve of 6 points (top-1 at 100 to 3,200). Every policy is scored on the same evaluation set, so curves can be compared directly. f0 alone (0 presentations) and the full pool (every pool image, 1,000 steps) bracket each curve: the first is the floor calibration has to beat, the second is the most calibration could ever give.
+
+**Groups**
+
+| Group | Subjects | Runs | Decides |
+| --- | --- | --- | --- |
+| diag | 1 | f0 + 3 full-pool ceilings per montage | Is the pipeline sane, and what is the ceiling? |
+| gate | 1 | random policy × 11 adapter settings × 2 seeds | Which adapter to freeze, and does calibration beat f0 at all? |
+| main | 2, 5, 8, 9 | 8 policies × 3 seeds, frozen adapter | Does any policy beat random? |
+
 ## Legend
 
 **Montages**
