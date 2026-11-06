@@ -7,7 +7,7 @@ Code: `github.com/navyers21/eeg_active_calibration` (branch `main`, `activecal.p
 
 |  |  |
 | --- | --- |
-| **Problem** | A new user sits down with a decoder pretrained on other people. Which images should they view during calibration so the decoder adapts best per recorded presentation? If a smart choice of images beats a random one, calibration can be shorter. |
+| **Problem** | A new user starts with a decoder pretrained on other subjects. Which images should they view during calibration so that the decoder adapts best per recorded presentation? If a smart choice of images beats a random one, calibration can be shorter. |
 | **Dataset** | THINGS-EEG, 10 subjects. Train: 16,540 images (1,654 concepts × 10), 4 repetitions each. The official test set is not used. |
 | **Task** | Zero-shot retrieval, 200-way, in CLIP (RN50) space with UBP uniform-11 blur targets. **Chance = 0.5%.** |
 | **Source decoder (f0)** | UBP EEGProject trained on the 9 other subjects (LOSO), never on the target. This is the uncalibrated starting point. |
